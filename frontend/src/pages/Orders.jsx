@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import axios from 'axios'
 import Layout from '../components/Layout'
 
-const API = 'http://127.0.0.1:5000/api'
+const API = '${import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000/api'}'
 
 const SHUSHIL_ID = 2
 const MUKESH_ID = 3
