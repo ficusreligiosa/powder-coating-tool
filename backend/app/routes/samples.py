@@ -12,23 +12,56 @@ samples_bp = Blueprint('samples', __name__)
 
 def resolve_party_info(sample, role):
     """Role ke basis pe party info return karo"""
+
     party_name = None
     party_code = None
 
     if sample.party_id:
-        party = Party.query.get(sample.party_id)
+        party = db.session.get(Party, sample.party_id)  # FIXED: Party.query.get() deprecated
+
         if party:
             party_name = party.party_name
             party_code = party.party_code
-    else:
+
+    # direct/manual party name
+    if not party_name and sample.party_name_direct:
         party_name = sample.party_name_direct
 
+    # =========================
+    # DISPLAY VALUE
+    # =========================
+
+    combined_party = None
+
+    if party_name and party_code:
+        combined_party = f"{party_name} ({party_code})"  # e.g. PARTH OVERSEAS (A-746)
+    elif party_name:
+        combined_party = party_name
+    elif party_code:
+        combined_party = party_code
+
+    # ROLE BASED RESPONSE
+
+    # DATA ENTRY → ONLY CODE
     if role == 'data_entry':
-        return {'party_name': None, 'party_code': party_code}
+        return {
+            'party_name': None,
+            'party_code': party_code or party_name
+        }
+
+    # SALESPERSON → ONLY NAME
     elif role == 'salesperson':
-        return {'party_name': party_name, 'party_code': None}
+        return {
+            'party_name': party_name,
+            'party_code': None
+        }
+
+    # ADMIN + CALCULATION → NAME + CODE (combined), party_code bhi bhejo for fallback
     else:
-        return {'party_name': party_name, 'party_code': party_code}
+        return {
+            'party_name': combined_party,
+            'party_code': party_code  # FIXED: None tha, ab party_code bhejo
+        }
 
 
 @samples_bp.route('/', methods=['GET'])
@@ -38,7 +71,7 @@ def get_samples():
     duration = request.args.get('duration', None)
     location = request.args.get('location', 'all')
     status = request.args.get('status', None)
-    created_by = request.args.get('created_by', None)  # NEW
+    created_by = request.args.get('created_by', None)
 
     query = Sample.query
 
@@ -82,7 +115,6 @@ def get_samples():
         else:
             sample_dict['city_name'] = '—'
 
-        # created_by bhi bhejo frontend ke liye
         sample_dict['created_by'] = s.created_by
 
         result.append(sample_dict)

@@ -155,226 +155,136 @@ def import_parties():
 @import_bp.route('/samples', methods=['POST'])
 @jwt_required()
 def import_samples():
-
     claims = get_jwt()
-
     if claims['role'] not in ['admin', 'calculation']:
-        return jsonify({
-            'message': 'Access denied'
-        }), 403
+        return jsonify({'message': 'Access denied'}), 403
 
     if 'file' not in request.files:
-        return jsonify({
-            'message': 'CSV file required'
-        }), 400
+        return jsonify({'message': 'CSV file required'}), 400
 
-    # CREATED BY
     created_by_raw = request.form.get('created_by')
-
-    created_by = (
-        int(created_by_raw)
-        if created_by_raw and created_by_raw.isdigit()
-        else None
-    )
+    created_by = int(created_by_raw) if created_by_raw and created_by_raw.isdigit() else None
 
     file = request.files['file']
-
-    stream = io.StringIO(
-        file.stream.read().decode('UTF-8')
-    )
-
+    stream = io.StringIO(file.stream.read().decode('UTF-8'))
     reader = csv.DictReader(stream)
 
     success = 0
     skipped = 0
     errors = []
 
-    for row in reader:
+    # Pre-load all parties and cities into memory — DB calls minimize honge
+    all_parties_by_code = {p.party_code.upper(): p for p in Party.query.all()}
+    all_parties_by_name = {p.party_name.upper(): p for p in Party.query.all()}
+    all_cities = {c.name.upper(): c for c in City.query.all()}
+    all_salespersons = {s.name.upper(): s for s in SalesPerson.query.all()}
 
+    new_cities = {}
+    new_salespersons = {}
+
+    rows = list(reader)
+
+    for row in rows:
         try:
-            # =========================
-            # ENTRY DATE
-            # =========================
-
-            timestamp_str = row.get(
-                'Timestamp',
-                ''
-            ).strip()
-
+            # Entry date
+            timestamp_str = row.get('Timestamp', '').strip()
             if not timestamp_str:
                 skipped += 1
                 continue
 
             try:
-                entry_date = datetime.strptime(
-                    timestamp_str,
-                    '%m/%d/%Y %H:%M:%S'
-                )
-
+                entry_date = datetime.strptime(timestamp_str, '%m/%d/%Y %H:%M:%S')
             except:
-
                 try:
-                    entry_date = datetime.strptime(
-                        timestamp_str,
-                        '%d/%m/%Y %H:%M:%S'
-                    )
-
+                    entry_date = datetime.strptime(timestamp_str, '%d/%m/%Y %H:%M:%S')
                 except:
                     entry_date = datetime.utcnow()
 
-            # =========================
-            # ORDER DATE
-            # =========================
-
-            order_date_str = row.get(
-                'Order Recieved Date',
-                ''
-            ).strip()
-
+            # Order date
+            order_date_str = row.get('Order Recieved Date', '').strip()
             if not order_date_str:
-                order_date_str = row.get(
-                    'Order Received Date',
-                    ''
-                ).strip()
-
+                order_date_str = row.get('Order Received Date', '').strip()
             try:
-                order_date = datetime.strptime(
-                    order_date_str,
-                    '%m/%d/%Y'
-                )
-
+                order_date = datetime.strptime(order_date_str, '%m/%d/%Y')
             except:
-
                 try:
-                    order_date = datetime.strptime(
-                        order_date_str,
-                        '%d/%m/%Y'
-                    )
-
+                    order_date = datetime.strptime(order_date_str, '%d/%m/%Y')
                 except:
                     order_date = entry_date
 
-            # =========================
-            # SALESPERSON
-            # =========================
+            # Salesperson — memory se lo
+            sp_name = row.get('Sales Person Name', '').strip().upper()
+            salesperson = all_salespersons.get(sp_name)
+            if not salesperson and sp_name:
+                if sp_name not in new_salespersons:
+                    sp = SalesPerson(name=sp_name)
+                    db.session.add(sp)
+                    db.session.flush()
+                    new_salespersons[sp_name] = sp
+                    all_salespersons[sp_name] = sp
+                salesperson = new_salespersons[sp_name]
 
-            sp_name = row.get(
-                'Sales Person Name',
-                ''
-            ).strip()
+            # Party — memory se lo
+            party_name = row.get('Party Name', '').strip()
+            party_code = row.get('Party Code', '').strip()
+            if not party_code:
+                party_code = row.get('Party ID', '').strip()
 
-            salesperson = (
-                get_or_create_salesperson(sp_name)
-                if sp_name else None
-            )
+            party = None
+            if party_code:
+                party = all_parties_by_code.get(party_code.upper())
+            if not party and party_name:
+                party = all_parties_by_name.get(party_name.upper())
 
-            # =========================
-            # PARTY
-            # =========================
+            # City — memory se lo
+            station = row.get('Station', '').strip().upper()
+            city = all_cities.get(station)
+            if not city and station:
+                if station not in new_cities:
+                    mbd_names = ['MORADABAD', 'MBD']
+                    c = City(
+                        name=station,
+                        state='',
+                        is_moradabad=station in mbd_names
+                    )
+                    db.session.add(c)
+                    db.session.flush()
+                    new_cities[station] = c
+                    all_cities[station] = c
+                city = new_cities[station]
 
-            party_name = row.get(
-                'Party Name',
-                ''
-            ).strip()
-
-            party = (
-                Party.query.filter(
-                    Party.party_name.ilike(party_name)
-                ).first()
-                if party_name else None
-            )
-
-            # =========================
-            # CITY
-            # =========================
-
-            station = row.get(
-                'Station',
-                ''
-            ).strip()
-
-            city = (
-                get_or_create_city(station)
-                if station else None
-            )
-
-            # =========================
-            # SAMPLE
-            # =========================
-
+            # Sample banao
             sample = Sample(
                 sales_person_id=salesperson.id if salesperson else None,
-
                 party_id=party.id if party else None,
-
-                party_name_direct=(
-                    party_name if not party else None
-                ),
-
+                party_name_direct=(party_name or party_code) if not party else None,
                 city_id=city.id if city else None,
-
                 order_received_date=order_date,
-
                 entry_date=entry_date,
-
                 status='completed',
-
                 completed_at=entry_date,
-
                 created_by=created_by
             )
-
             db.session.add(sample)
-
             db.session.flush()
 
-            # =========================
-            # PRODUCTS
-            # =========================
-
+            # Products
             for i in range(1, 9):
-
-                product_name = row.get(
-                    f'Product Name {i}',
-                    ''
-                ).strip()
-
+                product_name = row.get(f'Product Name {i}', '').strip()
                 if not product_name:
-                    product_name = row.get(
-                        f'Product Name{i}',
-                        ''
-                    ).strip()
-
+                    product_name = row.get(f'Product Name{i}', '').strip()
                 if not product_name:
                     continue
 
-                qty = row.get(
-                    f'Product {i} Qty',
-                    ''
-                ).strip()
-
+                qty = row.get(f'Product {i} Qty', '').strip()
                 if not qty:
-                    qty = row.get(
-                        f'Product{i} Qty',
-                        ''
-                    ).strip()
+                    qty = row.get(f'Product{i} Qty', '').strip()
 
-                matched = row.get(
-                    f'Matched With {i}',
-                    ''
-                ).strip()
-
+                matched = row.get(f'Matched With {i}', '').strip()
                 if not matched:
-                    matched = row.get(
-                        f'Matched With{i}',
-                        ''
-                    ).strip()
-
+                    matched = row.get(f'Matched With{i}', '').strip()
                 if not matched and i == 1:
-                    matched = row.get(
-                        'Matched With',
-                        ''
-                    ).strip()
+                    matched = row.get('Matched With', '').strip()
 
                 product = SampleProduct(
                     sample_id=sample.id,
@@ -382,19 +292,17 @@ def import_samples():
                     quantity=qty or '',
                     matched_with=matched
                 )
-
                 db.session.add(product)
 
             success += 1
 
+            # Har 100 rows pe commit karo
+            if success % 100 == 0:
+                db.session.commit()
+
         except Exception as e:
-
-            errors.append(
-                f"Row error: {str(e)}"
-            )
-
+            errors.append(f"Row error: {str(e)}")
             db.session.rollback()
-
             continue
 
     db.session.commit()

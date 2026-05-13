@@ -101,8 +101,10 @@ export default function Orders() {
         const edit = orderEdits[p.id] || {}
         rows.push({
           productId: p.id,
-          partyName: sample.party_name || sample.party_name_direct || 'Unknown',
-          partyCode: sample.party_code,
+          // FIXED: party_name ab combined hai (e.g. "PARTH OVERSEAS (A-746)") for admin/calc
+          // party_code fallback added for edge cases
+          partyName: sample.party_name || sample.party_name_direct || sample.party_code || 'Unknown',
+          partyCode: null,  // party_code already included inside party_name for admin/calc
           salesPerson: sample.sales_person_name,
           date: sample.order_received_date,
           city: sample.city_name,
@@ -123,7 +125,7 @@ export default function Orders() {
   const partyGroups = useMemo(() => {
     const map = {}
     allRows.forEach(row => {
-      if (!map[row.partyName]) map[row.partyName] = { partyName: row.partyName, partyCode: row.partyCode, rows: [] }
+      if (!map[row.partyName]) map[row.partyName] = { partyName: row.partyName, rows: [] }
       map[row.partyName].rows.push(row)
     })
     return Object.values(map).map(g => {
@@ -259,16 +261,11 @@ export default function Orders() {
                 <tbody>
                   {partyGroups.map((group, gi) => (
                     <>
-                      {/* Party header */}
+                      {/* Party header — FIXED: partyCode badge hataya, party_name mein already included hai */}
                       <tr key={`ph-${gi}`} className="bg-slate-100/80 border-t-2 border-slate-200">
                         <td colSpan={13} className="px-4 py-2.5">
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-black text-slate-700">{group.partyName}</span>
-                            {group.partyCode && (
-                              <span className="text-xs font-mono bg-white text-slate-500 border border-slate-200 px-2 py-0.5 rounded">
-                                {group.partyCode}
-                              </span>
-                            )}
                             <span className="text-xs text-slate-400 ml-1">
                               {group.totalSamples} sample{group.totalSamples > 1 ? 's' : ''}
                             </span>
