@@ -6,18 +6,22 @@ from app.models.party import Party
 from app.models.city import City
 from app.models.salesperson import SalesPerson
 from datetime import datetime, timedelta
+from sqlalchemy.orm import joinedload
 
 samples_bp = Blueprint('samples', __name__)
 
 
-def resolve_party_info(sample, role):
+def resolve_party_info(sample, role, parties_cache=None):
     """Role ke basis pe party info return karo"""
 
     party_name = None
     party_code = None
 
     if sample.party_id:
-        party = db.session.get(Party, sample.party_id)  # FIXED: Party.query.get() deprecated
+        if parties_cache and sample.party_id in parties_cache:
+            party = parties_cache[sample.party_id]
+        else:
+            party = db.session.get(Party, sample.party_id)
 
         if party:
             party_name = party.party_name
@@ -73,7 +77,10 @@ def get_samples():
     status = request.args.get('status', None)
     created_by = request.args.get('created_by', None)
 
-    query = Sample.query
+    query = Sample.query.options(
+        joinedload(Sample.salesperson),
+        joinedload(Sample.products)
+    )
 
     # Sirf completed dikhao Karishma ke liye
     if claims['role'] == 'calculation':
@@ -103,15 +110,21 @@ def get_samples():
 
     samples = query.order_by(Sample.order_received_date.desc()).all()
 
+    # Preload cities and parties to avoid N+1 queries
+    city_ids = [s.city_id for s in samples if s.city_id]
+    party_ids = [s.party_id for s in samples if s.party_id]
+
+    cities = {c.id: c for c in City.query.filter(City.id.in_(city_ids)).all()} if city_ids else {}
+    parties = {p.id: p for p in Party.query.filter(Party.id.in_(party_ids)).all()} if party_ids else {}
+
     result = []
     for s in samples:
         sample_dict = s.to_dict()
-        party_info = resolve_party_info(s, claims['role'])
+        party_info = resolve_party_info(s, claims['role'], parties)
         sample_dict.update(party_info)
 
-        if s.city_id:
-            city = City.query.get(s.city_id)
-            sample_dict['city_name'] = city.name if city else '—'
+        if s.city_id and s.city_id in cities:
+            sample_dict['city_name'] = cities[s.city_id].name
         else:
             sample_dict['city_name'] = '—'
 
@@ -129,19 +142,28 @@ def get_pending():
     if claims['role'] not in ['data_entry', 'admin']:
         return jsonify({'message': 'Access nahi hai'}), 403
 
-    samples = Sample.query.filter_by(
+    samples = Sample.query.options(
+        joinedload(Sample.salesperson),
+        joinedload(Sample.products)
+    ).filter_by(
         status='pending'
     ).order_by(Sample.order_received_date.asc()).all()
+
+    # Preload cities and parties
+    city_ids = [s.city_id for s in samples if s.city_id]
+    party_ids = [s.party_id for s in samples if s.party_id]
+
+    cities = {c.id: c for c in City.query.filter(City.id.in_(city_ids)).all()} if city_ids else {}
+    parties = {p.id: p for p in Party.query.filter(Party.id.in_(party_ids)).all()} if party_ids else {}
 
     result = []
     for s in samples:
         sample_dict = s.to_dict()
-        party_info = resolve_party_info(s, claims['role'])
+        party_info = resolve_party_info(s, claims['role'], parties)
         sample_dict.update(party_info)
 
-        if s.city_id:
-            city = City.query.get(s.city_id)
-            sample_dict['city_name'] = city.name if city else '—'
+        if s.city_id and s.city_id in cities:
+            sample_dict['city_name'] = cities[s.city_id].name
         else:
             sample_dict['city_name'] = '—'
 
@@ -175,10 +197,15 @@ def mark_complete(sample_id):
 @jwt_required()
 def get_sample(sample_id):
     claims = get_jwt()
-    sample = Sample.query.get_or_404(sample_id)
+    sample = Sample.query.options(
+        joinedload(Sample.salesperson),
+        joinedload(Sample.products)
+    ).get_or_404(sample_id)
+
     sample_dict = sample.to_dict()
 
-    party_info = resolve_party_info(sample, claims['role'])
+    parties = {sample.party_id: db.session.get(Party, sample.party_id)} if sample.party_id else {}
+    party_info = resolve_party_info(sample, claims['role'], parties)
     sample_dict.update(party_info)
 
     if sample.city_id:

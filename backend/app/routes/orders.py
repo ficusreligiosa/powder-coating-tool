@@ -4,6 +4,7 @@ from app import db
 from app.models.sample import Sample, SampleProduct, OrderDetail
 from app.models.party import Party
 from datetime import datetime, timedelta
+from sqlalchemy.orm import joinedload
 
 orders_bp = Blueprint('orders', __name__)
 
@@ -55,7 +56,9 @@ def get_analytics():
     months = int(duration)
     start_date = datetime.utcnow() - timedelta(days=30 * months)
 
-    query = Sample.query.filter(
+    query = Sample.query.options(
+        joinedload(Sample.products)
+    ).filter(
         Sample.order_received_date >= start_date
     )
     if party_id:
