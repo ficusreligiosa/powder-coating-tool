@@ -22,6 +22,7 @@ class Sample(db.Model):
     products = db.relationship('SampleProduct', backref='sample',
                                 lazy=True, cascade='all, delete-orphan')
     salesperson = db.relationship('SalesPerson', backref='samples', lazy=True)
+    city = db.relationship('City', backref='city_samples', lazy=True)
 
     def to_dict(self):
         return {
@@ -31,6 +32,7 @@ class Sample(db.Model):
             'party_id': self.party_id,
             'party_name_direct': self.party_name_direct,
             'city_id': self.city_id,
+            'city_name': self.city.name if self.city else None,
             'order_received_date': self.order_received_date.isoformat() if self.order_received_date else None,
             'status': self.status,
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,

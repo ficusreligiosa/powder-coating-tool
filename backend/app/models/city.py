@@ -8,9 +8,6 @@ class City(db.Model):
     state = db.Column(db.String(100), nullable=True)
     is_moradabad = db.Column(db.Boolean, default=False)
 
-    # Relationship
-    samples = db.relationship('Sample', backref='city', lazy=True)
-
     def to_dict(self):
         return {
             'id': self.id,

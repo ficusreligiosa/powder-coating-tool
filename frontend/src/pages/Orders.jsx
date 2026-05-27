@@ -8,15 +8,12 @@ const SHUSHIL_ID = 2
 const MUKESH_ID = 3
 
 // ── Quantity parser ────────────────────────────────────────────────────────────
-// Handles: "500 gm", "2 x 500 gm", "1.5 kg", "500g", "2x500g", plain numbers
 function parseQuantityToKg(raw) {
   if (!raw && raw !== 0) return null
   const str = String(raw).trim().toLowerCase()
 
-  // Plain number → treat as kg
   if (/^\d+(\.\d+)?$/.test(str)) return parseFloat(str)
 
-  // "N x M gm/g/kg" or "NxM gm/g/kg"
   const multiMatch = str.match(/^(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(kg|gm|g)?$/)
   if (multiMatch) {
     const count = parseFloat(multiMatch[1])
@@ -26,7 +23,6 @@ function parseQuantityToKg(raw) {
     return parseFloat((count * kg).toFixed(3))
   }
 
-  // "N gm/g/kg"
   const singleMatch = str.match(/^(\d+(?:\.\d+)?)\s*(kg|gm|g)$/)
   if (singleMatch) {
     const qty = parseFloat(singleMatch[1])
@@ -40,6 +36,7 @@ function parseQuantityToKg(raw) {
 export default function Orders() {
   const token = localStorage.getItem('token')
   const headers = { Authorization: `Bearer ${token}` }
+  const user = JSON.parse(localStorage.getItem('user') || '{}')
 
   const [samples, setSamples] = useState([])
   const [loading, setLoading] = useState(true)
@@ -55,6 +52,43 @@ export default function Orders() {
   const [bulkSaving, setBulkSaving] = useState(false)
 
   const productRefs = useRef({})
+
+  // ── Role-based party display ───────────────────────────────────────────────
+  const renderPartyInline = (partyName, partyCode) => {
+    if (user.role === 'data_entry') {
+      return (
+        <span className="font-mono bg-slate-100 text-slate-700 px-2.5 py-1 rounded-lg text-sm font-semibold">
+          {partyCode || partyName || '—'}
+        </span>
+      )
+    }
+    if (user.role === 'salesperson') {
+      return (
+        <span className="text-sm font-black text-slate-700">
+          {partyName || '—'}
+        </span>
+      )
+    }
+    // admin + calculation — dono dikhe
+    return (
+      <div className="flex flex-col gap-0.5">
+        <span className="text-sm font-black text-slate-700">{partyName || '—'}</span>
+        {partyCode && (
+          <span className="text-xs font-mono text-slate-400 bg-slate-100 px-2 py-0.5 rounded w-fit">
+            {partyCode}
+          </span>
+        )}
+      </div>
+    )
+  }
+
+  // Group key bhi role ke hisaab se
+  const getGroupKey = (sample) => {
+    if (user.role === 'data_entry') {
+      return sample.party_code || sample.party_name || sample.party_name_direct || 'Unknown'
+    }
+    return sample.party_name || sample.party_name_direct || sample.party_code || 'Unknown'
+  }
 
   // ── Fetch ──────────────────────────────────────────────────────────────────
   const fetchSamples = useCallback(async () => {
@@ -113,7 +147,6 @@ export default function Orders() {
     setSavedIds(prev => { const n = new Set(prev); n.delete(productId); return n })
   }
 
-  // Qty raw string input — shows inline parsed value as hint
   const handleQtyInput = (productId, raw) => {
     setQtyRaw(prev => ({ ...prev, [productId]: raw }))
     const parsed = parseQuantityToKg(raw)
@@ -166,7 +199,9 @@ export default function Orders() {
         const edit = orderEdits[p.id] || {}
         rows.push({
           productId: p.id,
-          partyName: sample.party_name || sample.party_name_direct || sample.party_code || 'Unknown',
+          groupKey: getGroupKey(sample),
+          partyName: sample.party_name || sample.party_name_direct || '—',
+          partyCode: sample.party_code || null,
           salesPerson: sample.sales_person_name,
           date: sample.order_received_date,
           city: sample.city_name,
@@ -183,12 +218,19 @@ export default function Orders() {
     return rows
   }, [samples, orderEdits])
 
-  // ── Group by party ────────────────────────────────────────────────────────
+  // ── Group by party (role-aware key) ──────────────────────────────────────
   const partyGroups = useMemo(() => {
     const map = {}
     allRows.forEach(row => {
-      if (!map[row.partyName]) map[row.partyName] = { partyName: row.partyName, rows: [] }
-      map[row.partyName].rows.push(row)
+      if (!map[row.groupKey]) {
+        map[row.groupKey] = {
+          groupKey: row.groupKey,
+          partyName: row.partyName,
+          partyCode: row.partyCode,
+          rows: []
+        }
+      }
+      map[row.groupKey].rows.push(row)
     })
     return Object.values(map).map(g => {
       const totalSamples = g.rows.length
@@ -198,7 +240,7 @@ export default function Orders() {
       const conversionPct = totalSamples > 0 ? ((orderedRows.length / totalSamples) * 100).toFixed(1) : '0'
       const hasDirty = g.rows.some(r => dirtyIds.has(r.productId))
       return { ...g, totalSamples, totalOrderQty, estimatedQtyPerSample, conversionPct, orderedCount: orderedRows.length, hasDirty }
-    }).sort((a, b) => a.partyName.localeCompare(b.partyName))
+    }).sort((a, b) => a.groupKey.localeCompare(b.groupKey))
   }, [allRows, dirtyIds])
 
   // ── Overall summary ───────────────────────────────────────────────────────
@@ -213,7 +255,6 @@ export default function Orders() {
   const goPrev = useCallback(() => setSelectedGroupIndex(i => Math.max(0, i - 1)), [])
   const goNext = useCallback(() => setSelectedGroupIndex(i => Math.min(partyGroups.length - 1, i + 1)), [partyGroups.length])
 
-  // Live modal stats — recalculate as user edits, no stale group values
   const modalStats = useMemo(() => {
     if (!selectedGroup) return null
     const orderedRows = selectedGroup.rows.filter(
@@ -233,7 +274,6 @@ export default function Orders() {
     return { totalOrderQty, orderedCount, conversionPct, hasUnsaved, anyDecided }
   }, [selectedGroup, orderEdits, dirtyIds])
 
-  // Keyboard nav
   useEffect(() => {
     if (selectedGroupIndex === null) return
     const handler = (e) => {
@@ -362,9 +402,28 @@ export default function Orders() {
                       >
                         <td colSpan={13} className="px-4 py-2.5">
                           <div className="flex items-center gap-2">
-                            <span className="text-sm font-black text-slate-700 group-hover:text-violet-700 transition-colors">
-                              {group.partyName}
-                            </span>
+                            {/* ROLE-BASED PARTY HEADER */}
+                            {user.role === 'data_entry' ? (
+                              <span className="font-mono bg-slate-200 text-slate-700 px-2.5 py-0.5 rounded-lg text-sm font-black group-hover:text-violet-700 transition-colors">
+                                {group.partyCode || group.partyName}
+                              </span>
+                            ) : user.role === 'salesperson' ? (
+                              <span className="text-sm font-black text-slate-700 group-hover:text-violet-700 transition-colors">
+                                {group.partyName}
+                              </span>
+                            ) : (
+                              // admin + calculation
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-black text-slate-700 group-hover:text-violet-700 transition-colors">
+                                  {group.partyName}
+                                </span>
+                                {group.partyCode && (
+                                  <span className="font-mono text-xs bg-slate-200 text-slate-500 px-2 py-0.5 rounded-lg">
+                                    {group.partyCode}
+                                  </span>
+                                )}
+                              </div>
+                            )}
                             <span className="text-xs text-slate-400 ml-1">
                               {group.totalSamples} sample{group.totalSamples > 1 ? 's' : ''}
                             </span>
@@ -521,9 +580,28 @@ export default function Orders() {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <h2 className="text-base sm:text-xl font-black text-slate-800 truncate">
-                        {selectedGroup.partyName}
-                      </h2>
+                      {/* ROLE-BASED PARTY NAME IN MODAL */}
+                      {user.role === 'data_entry' ? (
+                        <h2 className="text-base sm:text-xl font-black font-mono text-slate-800 truncate">
+                          {selectedGroup.partyCode || selectedGroup.partyName}
+                        </h2>
+                      ) : user.role === 'salesperson' ? (
+                        <h2 className="text-base sm:text-xl font-black text-slate-800 truncate">
+                          {selectedGroup.partyName}
+                        </h2>
+                      ) : (
+                        // admin + calculation
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h2 className="text-base sm:text-xl font-black text-slate-800 truncate">
+                            {selectedGroup.partyName}
+                          </h2>
+                          {selectedGroup.partyCode && (
+                            <span className="font-mono text-sm bg-slate-100 text-slate-500 px-2.5 py-0.5 rounded-lg shrink-0">
+                              {selectedGroup.partyCode}
+                            </span>
+                          )}
+                        </div>
+                      )}
                       <span className="text-xs font-bold bg-violet-100 text-violet-600 px-2.5 py-1 rounded-full shrink-0">
                         {selectedGroupIndex + 1} / {partyGroups.length}
                       </span>
@@ -608,13 +686,17 @@ export default function Orders() {
                           'border-slate-200'
                         }`}
                     >
-                      {/* Product name row */}
+                      {/* Product name + meta row */}
                       <div className="flex items-start justify-between gap-2 mb-3">
                         <div>
                           <p className="text-sm font-black text-slate-800 leading-snug">{row.productName}</p>
                           {row.matchedWith && (
                             <p className="text-xs text-slate-400 italic mt-0.5">{row.matchedWith}</p>
                           )}
+                          {/* Party info in modal card — role based */}
+                          <div className="mt-1">
+                            {renderPartyInline(row.partyName, row.partyCode)}
+                          </div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           <div className="min-w-[110px]">
@@ -630,7 +712,7 @@ export default function Orders() {
                         </div>
                       </div>
 
-                      {/* Controls — responsive 2-col on mobile, 4-col on sm+ */}
+                      {/* Controls */}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
 
                         {/* Order? */}
@@ -650,7 +732,7 @@ export default function Orders() {
                           </div>
                         </div>
 
-                        {/* Qty input with live parse hint */}
+                        {/* Qty */}
                         <div>
                           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">
                             Qty
@@ -711,42 +793,32 @@ export default function Orders() {
               {/* ── STICKY FOOTER ── */}
               <div className="px-4 sm:px-7 py-3 border-t border-slate-100 bg-white shrink-0">
                 <div className="flex items-center gap-3 sm:gap-5 flex-wrap">
-
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs text-slate-400">Total Qty</span>
                     <span className="text-sm font-black text-slate-700">
                       {modalStats.totalOrderQty > 0 ? `${modalStats.totalOrderQty} kg` : '—'}
                     </span>
                   </div>
-
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs text-slate-400">Conversion</span>
                     <span className={`text-sm font-black ${parseFloat(modalStats.conversionPct) >= 50 ? 'text-amber-500' : 'text-red-400'}`}>
                       {modalStats.anyDecided ? `${modalStats.conversionPct}%` : '—'}
                     </span>
                   </div>
-
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs text-slate-400">Ordered</span>
                     <span className="text-sm font-black text-slate-600">
                       {modalStats.orderedCount}/{selectedGroup.totalSamples}
                     </span>
                   </div>
-
-                  {/* Bulk Save */}
                   <button
                     onClick={() => bulkSaveGroup(selectedGroup)}
                     disabled={bulkSaving || !modalStats.anyDecided}
                     className="ml-auto px-4 sm:px-5 py-2 rounded-xl text-white text-xs sm:text-sm font-black disabled:opacity-40 transition-all hover:opacity-90 flex items-center gap-2"
                     style={{ background: '#7C3AED' }}
                   >
-                    {bulkSaving
-                      ? 'Saving all...'
-                      : modalStats.hasUnsaved
-                        ? 'Save All ●'
-                        : 'Save All'}
+                    {bulkSaving ? 'Saving all...' : modalStats.hasUnsaved ? 'Save All ●' : 'Save All'}
                   </button>
-
                   <span className="hidden sm:block text-xs text-slate-300">Esc · ← →</span>
                 </div>
               </div>

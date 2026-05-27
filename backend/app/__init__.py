@@ -4,7 +4,7 @@ from flask_migrate import Migrate
 from flask_jwt_extended import JWTManager
 from flask_cors import CORS
 from config import Config
-from datetime import timedelta
+from sqlalchemy.pool import NullPool
 
 db = SQLAlchemy()
 migrate = Migrate()
@@ -14,6 +14,11 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
     app.url_map.strict_slashes = False
+
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'poolclass': NullPool,
+        'connect_args': {'connect_timeout': 30}
+    }
 
     db.init_app(app)
     migrate.init_app(app, db)

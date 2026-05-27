@@ -5,8 +5,6 @@ import Layout from '../components/Layout'
 const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000/api'
 
 export default function Samples() {
-  const token = localStorage.getItem('token')
-  const headers = { Authorization: `Bearer ${token}` }
   const user = JSON.parse(localStorage.getItem('user') || '{}')
 
   const [samples, setSamples] = useState([])
@@ -18,6 +16,9 @@ export default function Samples() {
   const fetchSamples = async () => {
     setLoading(true)
     try {
+      const token = localStorage.getItem('token')
+      const headers = { Authorization: `Bearer ${token}` }
+
       let url = `${API}/samples?`
       if (duration) url += `duration=${duration}&`
       if (location !== 'all') url += `location=${location}&`
@@ -225,7 +226,6 @@ export default function Samples() {
                         <div className="space-y-3">
                           {sample.products?.map((p, idx) => (
                             <div key={p.id} className="flex items-start gap-3">
-                              {/* Product number badge */}
                               <span className="mt-0.5 flex-shrink-0 w-5 h-5 rounded-full bg-violet-100 text-violet-600 text-xs font-bold flex items-center justify-center">
                                 {idx + 1}
                               </span>

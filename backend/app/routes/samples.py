@@ -1,3 +1,4 @@
+import re
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 from app import db
@@ -11,9 +12,7 @@ from sqlalchemy.orm import joinedload
 samples_bp = Blueprint('samples', __name__)
 
 
-def resolve_party_info(sample, role, parties_cache=None):
-    """Role ke basis pe party info return karo"""
-
+def resolve_party_info(sample, role, parties_cache=None, parties_by_code=None):
     party_name = None
     party_code = None
 
@@ -22,50 +21,52 @@ def resolve_party_info(sample, role, parties_cache=None):
             party = parties_cache[sample.party_id]
         else:
             party = db.session.get(Party, sample.party_id)
-
         if party:
             party_name = party.party_name
             party_code = party.party_code
 
-    # direct/manual party name
+    # party_name_direct check — agar A-XXXX pattern hai toh cache se match karo
     if not party_name and sample.party_name_direct:
-        party_name = sample.party_name_direct
+        raw = sample.party_name_direct.strip()
+        if re.match(r'^A-\d+$', raw, re.IGNORECASE):
+            party = (parties_by_code or {}).get(raw.upper())
+            if party:
+                party_name = party.party_name
+                party_code = party.party_code
+            else:
+                party_code = raw
+        else:
+            party_name = raw
 
-    # =========================
-    # DISPLAY VALUE
-    # =========================
-
-    combined_party = None
-
-    if party_name and party_code:
-        combined_party = f"{party_name} ({party_code})"  # e.g. PARTH OVERSEAS (A-746)
-    elif party_name:
-        combined_party = party_name
-    elif party_code:
-        combined_party = party_code
-
-    # ROLE BASED RESPONSE
-
-    # DATA ENTRY → ONLY CODE
     if role == 'data_entry':
-        return {
-            'party_name': None,
-            'party_code': party_code or party_name
-        }
-
-    # SALESPERSON → ONLY NAME
+        return {'party_name': None, 'party_code': party_code or party_name}
     elif role == 'salesperson':
-        return {
-            'party_name': party_name,
-            'party_code': None
-        }
-
-    # ADMIN + CALCULATION → NAME + CODE (combined), party_code bhi bhejo for fallback
+        return {'party_name': party_name, 'party_code': None}
     else:
-        return {
-            'party_name': combined_party,
-            'party_code': party_code  # FIXED: None tha, ab party_code bhejo
-        }
+        combined = None
+        if party_name and party_code:
+            combined = f"{party_name} ({party_code})"
+        elif party_name:
+            combined = party_name
+        elif party_code:
+            combined = party_code
+        return {'party_name': combined, 'party_code': party_code}
+
+
+def build_parties_by_code(samples):
+    """Unlinked samples ke A-XXXX party_name_direct ke liye bulk cache"""
+    direct_codes = [
+        s.party_name_direct.strip().upper()
+        for s in samples
+        if not s.party_id and s.party_name_direct
+        and re.match(r'^A-\d+$', s.party_name_direct.strip(), re.IGNORECASE)
+    ]
+    if not direct_codes:
+        return {}
+    code_parties = Party.query.filter(
+        db.func.upper(Party.party_code).in_(direct_codes)
+    ).all()
+    return {p.party_code.strip().upper(): p for p in code_parties}
 
 
 @samples_bp.route('/', methods=['GET'])
@@ -79,22 +80,20 @@ def get_samples():
 
     query = Sample.query.options(
         joinedload(Sample.salesperson),
-        joinedload(Sample.products)
+        joinedload(Sample.products),
+        joinedload(Sample.city)
     )
 
-    # Sirf completed dikhao Karishma ke liye
     if claims['role'] == 'calculation':
         query = query.filter(Sample.status == 'completed')
     elif status:
         query = query.filter(Sample.status == status)
 
-    # Salesperson sirf apni requests dekhe
     if claims['role'] == 'salesperson':
         sp_id = claims.get('salesperson_id')
         if sp_id:
             query = query.filter(Sample.sales_person_id == sp_id)
 
-    # Entry By filter (created_by user ID) — sirf admin/calculation ke liye
     if created_by and claims['role'] in ['admin', 'calculation']:
         query = query.filter(Sample.created_by == int(created_by))
 
@@ -104,32 +103,24 @@ def get_samples():
         query = query.filter(Sample.order_received_date >= start_date)
 
     if location == 'mbd':
-        query = query.join(City).filter(City.is_moradabad == True)
+        query = query.join(City, Sample.city_id == City.id).filter(City.is_moradabad == True)
     elif location == 'rest':
-        query = query.join(City).filter(City.is_moradabad == False)
+        query = query.join(City, Sample.city_id == City.id).filter(City.is_moradabad == False)
 
     samples = query.order_by(Sample.order_received_date.desc()).all()
 
-    # Preload cities and parties to avoid N+1 queries
-    city_ids = [s.city_id for s in samples if s.city_id]
+    # Bulk caches — sirf 2 DB calls
     party_ids = [s.party_id for s in samples if s.party_id]
-
-    cities = {c.id: c for c in City.query.filter(City.id.in_(city_ids)).all()} if city_ids else {}
     parties = {p.id: p for p in Party.query.filter(Party.id.in_(party_ids)).all()} if party_ids else {}
+    parties_by_code = build_parties_by_code(samples)
 
     result = []
     for s in samples:
         sample_dict = s.to_dict()
-        party_info = resolve_party_info(s, claims['role'], parties)
+        party_info = resolve_party_info(s, claims['role'], parties, parties_by_code)
         sample_dict.update(party_info)
-
-        if s.city_id and s.city_id in cities:
-            sample_dict['city_name'] = cities[s.city_id].name
-        else:
-            sample_dict['city_name'] = '—'
-
+        sample_dict['city_name'] = s.city.name if s.city else '—'
         sample_dict['created_by'] = s.created_by
-
         result.append(sample_dict)
 
     return jsonify(result), 200
@@ -144,31 +135,21 @@ def get_pending():
 
     samples = Sample.query.options(
         joinedload(Sample.salesperson),
-        joinedload(Sample.products)
-    ).filter_by(
-        status='pending'
-    ).order_by(Sample.order_received_date.asc()).all()
+        joinedload(Sample.products),
+        joinedload(Sample.city)
+    ).filter_by(status='pending').order_by(Sample.order_received_date.asc()).all()
 
-    # Preload cities and parties
-    city_ids = [s.city_id for s in samples if s.city_id]
     party_ids = [s.party_id for s in samples if s.party_id]
-
-    cities = {c.id: c for c in City.query.filter(City.id.in_(city_ids)).all()} if city_ids else {}
     parties = {p.id: p for p in Party.query.filter(Party.id.in_(party_ids)).all()} if party_ids else {}
+    parties_by_code = build_parties_by_code(samples)
 
     result = []
     for s in samples:
         sample_dict = s.to_dict()
-        party_info = resolve_party_info(s, claims['role'], parties)
+        party_info = resolve_party_info(s, claims['role'], parties, parties_by_code)
         sample_dict.update(party_info)
-
-        if s.city_id and s.city_id in cities:
-            sample_dict['city_name'] = cities[s.city_id].name
-        else:
-            sample_dict['city_name'] = '—'
-
+        sample_dict['city_name'] = s.city.name if s.city else '—'
         sample_dict['created_by'] = s.created_by
-
         result.append(sample_dict)
 
     return jsonify(result), 200
@@ -205,7 +186,8 @@ def get_sample(sample_id):
     sample_dict = sample.to_dict()
 
     parties = {sample.party_id: db.session.get(Party, sample.party_id)} if sample.party_id else {}
-    party_info = resolve_party_info(sample, claims['role'], parties)
+    parties_by_code = build_parties_by_code([sample])
+    party_info = resolve_party_info(sample, claims['role'], parties, parties_by_code)
     sample_dict.update(party_info)
 
     if sample.city_id:
