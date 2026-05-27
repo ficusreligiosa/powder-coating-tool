@@ -20,6 +20,7 @@ export default function Admin() {
   const [importing, setImporting] = useState(false)
   const [importResult, setImportResult] = useState(null)
   const [importCreatedBy, setImportCreatedBy] = useState('')
+  const [tallyResult, setTallyResult] = useState(null)
 
   const [newUser, setNewUser] = useState({ username: '', password: '', full_name: '', role: 'data_entry', salesperson_id: '' })
   const [newParty, setNewParty] = useState({ party_name: '', phone_number: '', sales_person_name: '' })
@@ -66,6 +67,27 @@ export default function Admin() {
       fetchAll()
     } catch (err) {
       setImportResult({ type: 'error', message: err.response?.data?.message || 'Import failed' })
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const handleTallyImport = async (file) => {
+    if (!file) return
+    setImporting(true)
+    setTallyResult(null)
+    const formData = new FormData()
+    formData.append('file', file)
+    try {
+      const res = await axios.post(`${API}/import/tally`, formData, {
+        headers: { ...headers, 'Content-Type': 'multipart/form-data' }
+      })
+      setTallyResult({ type: 'success', ...res.data })
+    } catch (err) {
+      setTallyResult({
+        type: 'error',
+        message: err.response?.data?.message || 'Import failed'
+      })
     } finally {
       setImporting(false)
     }
@@ -400,6 +422,53 @@ export default function Admin() {
                 }`} />
               {!importCreatedBy && <span className="text-xs text-amber-500 font-medium ml-3">Select user first</span>}
               {importing && <span className="text-xs text-slate-400 animate-pulse ml-3">Importing...</span>}
+            </div>
+
+            {/* Tally Import */}
+            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+              <div className="flex items-start justify-between mb-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Import Tally Movement Analysis</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Party-wise CSV export from Tally — auto fills Order Yes/No and Quantity
+                  </p>
+                </div>
+                <span className="text-xs bg-amber-50 text-amber-600 px-2 py-1 rounded-full font-medium">Tally Export</span>
+              </div>
+
+              {tallyResult && (
+                <div className={`mb-3 px-4 py-3 rounded-xl text-sm border ${
+                  tallyResult.type === 'success'
+                    ? 'bg-green-50 border-green-200 text-green-700'
+                    : 'bg-red-50 border-red-200 text-red-700'
+                }`}>
+                  {tallyResult.type === 'success' ? (
+                    <div className="space-y-1">
+                      <p className="font-semibold">✅ {tallyResult.message}</p>
+                      <p>Party: <strong>{tallyResult.party}</strong> ({tallyResult.party_code})</p>
+                      <p>Duration: {tallyResult.date_range}</p>
+                      <p>Tally Total: <strong>{tallyResult.tally_total_kg} kg</strong></p>
+                      <p>Sample Qty: <strong>{tallyResult.sample_qty_kg} kg</strong></p>
+                      <p>Net Order: <strong>{tallyResult.net_order_kg} kg</strong></p>
+                      <p>Order: <strong>{tallyResult.order_yes ? '✅ YES' : '❌ NO'}</strong></p>
+                      <p>Products Updated: <strong>{tallyResult.products_updated}</strong></p>
+                    </div>
+                  ) : (
+                    <p>❌ {tallyResult.message}</p>
+                  )}
+                </div>
+              )}
+
+              <div className="flex items-center gap-3">
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={e => handleTallyImport(e.target.files[0])}
+                  className="text-sm text-slate-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-amber-50 file:text-amber-700 hover:file:bg-amber-100"
+                  disabled={importing}
+                />
+                {importing && <span className="text-xs text-slate-400 animate-pulse">Processing...</span>}
+              </div>
             </div>
 
             {/* Instructions */}
